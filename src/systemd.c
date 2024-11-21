@@ -1,4 +1,3 @@
-#include <complex.h>
 #include "collectd.h"
 
 #include "metric.h"
@@ -155,13 +154,18 @@ static const char *config_keys[] = {"Service"};
 
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
-static char const *services[16] = {NULL};
+static char *services[16] = {NULL};
 
 static size_t services_num = 0;
 
 static int systemd_config(const char *key, const char *value) {
   char *ret_path;
-  sd_bus_path_encode("/org/freedesktop/systemd1/unit", value, &ret_path);
+  int r =
+      sd_bus_path_encode("/org/freedesktop/systemd1/unit", value, &ret_path);
+  if (r < 0) {
+    ERROR("Can't encode \"%s\" service: %s", value, strerror(-r));
+    return EXIT_FAILURE;
+  }
   services[services_num] = ret_path;
   ++services_num;
   services[services_num] = NULL;
@@ -187,7 +191,7 @@ static int get_prop(sd_bus *bus, char const *service, char const type[static 1],
 static int systemd_read() {
   int r;
   sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
-  for (char const **service_it = services; *service_it != NULL; ++service_it) {
+  for (char **service_it = services; *service_it != NULL; ++service_it) {
     INFO("%s", *service_it);
     for (systemd_metric_group const *groups_it = groups;
          groups_it->accounting_flag != NULL; ++groups_it) {
@@ -250,6 +254,9 @@ static int systemd_init() {
 
 static int systemd_shutdown() {
   sd_bus_unref(bus);
+  for (char **service_it = services; *service_it != NULL; ++service_it) {
+    free(*service_it);
+  }
   return EXIT_SUCCESS;
 }
 
