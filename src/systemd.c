@@ -9,26 +9,51 @@
 typedef struct systemd_metric systemd_metric;
 struct systemd_metric {
   char *name;
-  char const *type;
+  char const *dbus_type;
+  metric_type_t collectd_type;
 };
 
-typedef struct systemd_accounting_group systemd_accounting_group;
-struct systemd_accounting_group {
+typedef struct systemd_metric_group systemd_metric_group;
+struct systemd_metric_group {
   char const *accounting_flag;
   systemd_metric *metrics;
 };
 
-systemd_accounting_group const groups[] = {
+systemd_metric_group const groups[] = {
     {
         .accounting_flag = "MemoryAccounting",
         .metrics =
             (systemd_metric[]){
-                {.name = "MemoryAvailable", .type = "t"},
-                {.name = "MemoryCurrent", .type = "t"},
-                {.name = "MemoryPeak", .type = "t"},
-                {.name = "MemorySwapCurrent", .type = "t"},
-                {.name = "MemoryZSwapCurrent", .type = "t"},
-                {.name = "MemorySwapPeak", .type = "t"},
+                {
+                    .name = "MemoryAvailable",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
+                {
+                    .name = "MemoryCurrent",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
+                {
+                    .name = "MemoryPeak",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
+                {
+                    .name = "MemorySwapCurrent",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
+                {
+                    .name = "MemoryZSwapCurrent",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
+                {
+                    .name = "MemorySwapPeak",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
                 {.name = NULL},
             },
     },
@@ -36,10 +61,26 @@ systemd_accounting_group const groups[] = {
         .accounting_flag = "IOAccounting",
         .metrics =
             (systemd_metric[]){
-                {.name = "IOReadBytes", .type = "t"},
-                {.name = "IOReadOperations", .type = "t"},
-                {.name = "IOWriteBytes", .type = "t"},
-                {.name = "IOWriteOperations", .type = "t"},
+                {
+                    .name = "IOReadBytes",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
+                {
+                    .name = "IOReadOperations",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
+                {
+                    .name = "IOWriteBytes",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
+                {
+                    .name = "IOWriteOperations",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
                 {.name = NULL},
             },
     },
@@ -47,7 +88,11 @@ systemd_accounting_group const groups[] = {
         .accounting_flag = "CPUAccounting",
         .metrics =
             (systemd_metric[]){
-                {.name = "CPUUsageNSec", .type = "t"},
+                {
+                    .name = "CPUUsageNSec",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
                 {.name = NULL},
             },
     },
@@ -55,10 +100,26 @@ systemd_accounting_group const groups[] = {
         .accounting_flag = "IPAccounting",
         .metrics =
             (systemd_metric[]){
-                {.name = "IPEgressBytes", .type = "t"},
-                {.name = "IPEgressPackets", .type = "t"},
-                {.name = "IPIngressBytes", .type = "t"},
-                {.name = "IPIngressPackets", .type = "t"},
+                {
+                    .name = "IPEgressBytes",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
+                {
+                    .name = "IPEgressPackets",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
+                {
+                    .name = "IPIngressBytes",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
+                {
+                    .name = "IPIngressPackets",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
                 {.name = NULL},
             },
     },
@@ -66,7 +127,11 @@ systemd_accounting_group const groups[] = {
         .accounting_flag = "TasksAccounting",
         .metrics =
             (systemd_metric[]){
-                {.name = "TasksCurrent", .type = "t"},
+                {
+                    .name = "TasksCurrent",
+                    .dbus_type = "t",
+                    .collectd_type = METRIC_TYPE_GAUGE,
+                },
                 {.name = NULL},
             },
     },
@@ -74,7 +139,11 @@ systemd_accounting_group const groups[] = {
         .accounting_flag = "true",
         .metrics =
             (systemd_metric[]){
-                {.name = "NRestarts", .type = "u"},
+                {
+                    .name = "NRestarts",
+                    .dbus_type = "u",
+                    .collectd_type = METRIC_TYPE_COUNTER,
+                },
                 {.name = NULL},
             },
     },
@@ -83,7 +152,6 @@ systemd_accounting_group const groups[] = {
 
 sd_bus *bus = NULL;
 
-// Err: negative
 static int get_prop(sd_bus *bus, char const type[static 1],
                     char const prop[static 1], void *var, sd_bus_error *err) {
   sd_bus_message *m = NULL;
@@ -102,7 +170,7 @@ static int get_prop(sd_bus *bus, char const type[static 1],
 static int systemd_read() {
   int r;
   sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
-  for (systemd_accounting_group const *groups_it = groups;
+  for (systemd_metric_group const *groups_it = groups;
        groups_it->accounting_flag != NULL; ++groups_it) {
     bool accounting_flag_var = true;
     if (strcmp(groups_it->accounting_flag, "true")) {
@@ -119,7 +187,7 @@ static int systemd_read() {
       for (systemd_metric *metrics_it = groups_it->metrics;
            metrics_it->name != NULL; ++metrics_it) {
         uint64_t val;
-        r = get_prop(bus, metrics_it->type, metrics_it->name, &val,
+        r = get_prop(bus, metrics_it->dbus_type, metrics_it->name, &val,
                      &sd_bus_err);
         if (r < 0) {
           ERROR("Failed to get %s property: %s {%s}, %s", metrics_it->name,
@@ -127,8 +195,10 @@ static int systemd_read() {
           goto defer;
         }
 
-        metric_family_t fam = {.name = metrics_it->name,
-                               .type = METRIC_TYPE_COUNTER};
+        metric_family_t fam = {
+            .name = metrics_it->name,
+            .type = metrics_it->collectd_type,
+        };
         metric_family_metric_append(&fam, (metric_t){.value.counter = val});
         r = plugin_dispatch_metric_family(&fam);
         metric_family_metric_reset(&fam);
