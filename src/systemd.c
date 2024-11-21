@@ -1,3 +1,4 @@
+#include <complex.h>
 #include "collectd.h"
 
 #include "metric.h"
@@ -180,7 +181,7 @@ static int systemd_read() {
         ERROR("Failed to get %s accounting flag: %s {%s}, %s",
               groups_it->accounting_flag, sd_bus_err.name, sd_bus_err.message,
               strerror(-r));
-        goto defer;
+        goto fail;
       }
     }
     if (accounting_flag_var) {
@@ -192,7 +193,7 @@ static int systemd_read() {
         if (r < 0) {
           ERROR("Failed to get %s property: %s {%s}, %s", metrics_it->name,
                 sd_bus_err.name, sd_bus_err.message, strerror(-r));
-          goto defer;
+          goto fail;
         }
 
         metric_family_t fam = {
@@ -204,16 +205,16 @@ static int systemd_read() {
         metric_family_metric_reset(&fam);
         if (r != 0) {
           ERROR("Failed to dispatch: %s", STRERROR(r));
-          goto defer;
+          goto fail;
         }
       }
     }
   }
-
-defer:
-  sd_bus_error_free(&sd_bus_err);
-
   return EXIT_SUCCESS;
+
+fail:
+  sd_bus_error_free(&sd_bus_err);
+  return r;
 }
 
 static int systemd_init() {
