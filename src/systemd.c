@@ -222,7 +222,20 @@ static int systemd_read() {
               .name = metrics_it->name,
               .type = metrics_it->collectd_type,
           };
-          metric_family_metric_append(&fam, (metric_t){.value.counter = val});
+          metric_t m;
+          switch (metrics_it->collectd_type) {
+          case METRIC_TYPE_COUNTER:
+            m = (metric_t){.value.counter = val};
+            break;
+          case METRIC_TYPE_GAUGE:
+            m = (metric_t){.value.gauge = val};
+            break;
+          default:
+            ERROR("Unimplemented collectd type");
+            goto fail;
+          }
+          metric_label_set(&m, "path", *service_it);
+          metric_family_metric_append(&fam, m);
           r = plugin_dispatch_metric_family(&fam);
           metric_family_metric_reset(&fam);
           if (r != 0) {
