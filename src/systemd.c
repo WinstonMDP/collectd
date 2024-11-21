@@ -151,15 +151,31 @@ systemd_metric_group const groups[] = {
     {.accounting_flag = NULL},
 };
 
+static const char *config_keys[] = {"Service"};
+
+static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
+
+static char const *services[16] = {NULL};
+
+static size_t services_num = 0;
+
+static int systemd_config(const char *key, const char *value) {
+  char *ret_path;
+  sd_bus_path_encode("/org/freedesktop/systemd1/unit", value, &ret_path);
+  services[services_num] = ret_path;
+  ++services_num;
+  services[services_num] = NULL;
+  return EXIT_SUCCESS;
+}
+
 sd_bus *bus = NULL;
 
-static int get_prop(sd_bus *bus, char const type[static 1],
+static int get_prop(sd_bus *bus, char const *service, char const type[static 1],
                     char const prop[static 1], void *var, sd_bus_error *err) {
   sd_bus_message *m = NULL;
-  int r = sd_bus_get_property(
-      bus, "org.freedesktop.systemd1",
-      "/org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice",
-      "org.freedesktop.systemd1.Service", prop, err, &m, type);
+  int r = sd_bus_get_property(bus, "org.freedesktop.systemd1", service,
+                              "org.freedesktop.systemd1.Service", prop, err, &m,
+                              type);
   if (r < 0) {
     return r;
   }
@@ -171,41 +187,44 @@ static int get_prop(sd_bus *bus, char const type[static 1],
 static int systemd_read() {
   int r;
   sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
-  for (systemd_metric_group const *groups_it = groups;
-       groups_it->accounting_flag != NULL; ++groups_it) {
-    bool accounting_flag_var = true;
-    if (strcmp(groups_it->accounting_flag, "true")) {
-      r = get_prop(bus, "b", groups_it->accounting_flag, &accounting_flag_var,
-                   &sd_bus_err);
-      if (r < 0) {
-        ERROR("Failed to get %s accounting flag: %s {%s}, %s",
-              groups_it->accounting_flag, sd_bus_err.name, sd_bus_err.message,
-              strerror(-r));
-        goto fail;
-      }
-    }
-    if (accounting_flag_var) {
-      for (systemd_metric *metrics_it = groups_it->metrics;
-           metrics_it->name != NULL; ++metrics_it) {
-        uint64_t val;
-        r = get_prop(bus, metrics_it->dbus_type, metrics_it->name, &val,
-                     &sd_bus_err);
+  for (char const **service_it = services; *service_it != NULL; ++service_it) {
+    INFO("%s", *service_it);
+    for (systemd_metric_group const *groups_it = groups;
+         groups_it->accounting_flag != NULL; ++groups_it) {
+      bool accounting_flag_var = true;
+      if (strcmp(groups_it->accounting_flag, "true")) {
+        r = get_prop(bus, *service_it, "b", groups_it->accounting_flag,
+                     &accounting_flag_var, &sd_bus_err);
         if (r < 0) {
-          ERROR("Failed to get %s property: %s {%s}, %s", metrics_it->name,
-                sd_bus_err.name, sd_bus_err.message, strerror(-r));
+          ERROR("Failed to get %s accounting flag: %s {%s}, %s",
+                groups_it->accounting_flag, sd_bus_err.name, sd_bus_err.message,
+                strerror(-r));
           goto fail;
         }
+      }
+      if (accounting_flag_var) {
+        for (systemd_metric *metrics_it = groups_it->metrics;
+             metrics_it->name != NULL; ++metrics_it) {
+          uint64_t val;
+          r = get_prop(bus, *service_it, metrics_it->dbus_type,
+                       metrics_it->name, &val, &sd_bus_err);
+          if (r < 0) {
+            ERROR("Failed to get %s property: %s {%s}, %s", metrics_it->name,
+                  sd_bus_err.name, sd_bus_err.message, strerror(-r));
+            goto fail;
+          }
 
-        metric_family_t fam = {
-            .name = metrics_it->name,
-            .type = metrics_it->collectd_type,
-        };
-        metric_family_metric_append(&fam, (metric_t){.value.counter = val});
-        r = plugin_dispatch_metric_family(&fam);
-        metric_family_metric_reset(&fam);
-        if (r != 0) {
-          ERROR("Failed to dispatch: %s", STRERROR(r));
-          goto fail;
+          metric_family_t fam = {
+              .name = metrics_it->name,
+              .type = metrics_it->collectd_type,
+          };
+          metric_family_metric_append(&fam, (metric_t){.value.counter = val});
+          r = plugin_dispatch_metric_family(&fam);
+          metric_family_metric_reset(&fam);
+          if (r != 0) {
+            ERROR("Failed to dispatch: %s", STRERROR(r));
+            goto fail;
+          }
         }
       }
     }
@@ -236,6 +255,8 @@ static int systemd_shutdown() {
 
 void module_register() {
   plugin_register_init("systemd", systemd_init);
+  plugin_register_config("systemd", systemd_config, config_keys,
+                         config_keys_num);
   plugin_register_read("systemd", systemd_read);
   plugin_register_shutdown("systemd", systemd_shutdown);
 }
