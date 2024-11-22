@@ -1,5 +1,6 @@
 #include "collectd.h"
 
+#include "liboconfig/oconfig.h"
 #include "metric.h"
 #include "plugin.h"
 
@@ -150,24 +151,33 @@ systemd_metric_group const groups[] = {
     {.accounting_flag = NULL},
 };
 
-static const char *config_keys[] = {"Service"};
-
-static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
-
-static char *services[16] = {NULL};
+static char **services = NULL;
 
 static size_t services_num = 0;
 
-static int systemd_config(const char *key, const char *value) {
-  char *ret_path;
-  int r =
-      sd_bus_path_encode("/org/freedesktop/systemd1/unit", value, &ret_path);
-  if (r < 0) {
-    ERROR("Can't encode \"%s\" service: %s", value, strerror(-r));
+static int systemd_config(oconfig_item_t *ci) {
+  services_num += ci->children_num;
+  services = realloc(services, sizeof(char *) * (services_num + 1));
+  if (services == NULL) {
+    ERROR("Can't allocate memory for services");
     return EXIT_FAILURE;
   }
-  services[services_num] = ret_path;
-  ++services_num;
+  for (size_t i = 0; i < ci->children_num; ++i) {
+    oconfig_item_t *child = ci->children + i;
+    char *external_id = NULL;
+    char *service;
+    if (cf_util_get_string(child, &external_id) < 0) {
+      ERROR("Error during parsing config");
+      return EXIT_FAILURE;
+    }
+    int r = sd_bus_path_encode("/org/freedesktop/systemd1/unit", external_id,
+                               &service);
+    if (r < 0) {
+      ERROR("Can't encode \"%s\" service: %s", external_id, strerror(-r));
+      return EXIT_FAILURE;
+    }
+    services[services_num - ci->children_num + i] = service;
+  }
   services[services_num] = NULL;
   return EXIT_SUCCESS;
 }
@@ -269,13 +279,13 @@ static int systemd_shutdown() {
   for (char **service_it = services; *service_it != NULL; ++service_it) {
     free(*service_it);
   }
+  free(services);
   return EXIT_SUCCESS;
 }
 
 void module_register() {
   plugin_register_init("systemd", systemd_init);
-  plugin_register_config("systemd", systemd_config, config_keys,
-                         config_keys_num);
+  plugin_register_complex_config("systemd", systemd_config);
   plugin_register_read("systemd", systemd_read);
   plugin_register_shutdown("systemd", systemd_shutdown);
 }
