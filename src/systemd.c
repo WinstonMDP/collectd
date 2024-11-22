@@ -157,7 +157,7 @@ static size_t services_num = 0;
 
 static int systemd_config(oconfig_item_t *ci) {
   services_num += ci->children_num;
-  services = realloc(services, sizeof(char *) * (services_num + 1));
+  services = realloc(services, sizeof(char *) * services_num);
   if (services == NULL) {
     ERROR("Can't allocate memory for services");
     return EXIT_FAILURE;
@@ -178,7 +178,6 @@ static int systemd_config(oconfig_item_t *ci) {
     }
     services[services_num - ci->children_num + i] = service;
   }
-  services[services_num] = NULL;
   return EXIT_SUCCESS;
 }
 
@@ -201,7 +200,8 @@ static int get_prop(sd_bus *bus, char const *service, char const type[static 1],
 static int systemd_read() {
   int r;
   sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
-  for (char **service_it = services; *service_it != NULL; ++service_it) {
+  for (char **service_it = services; service_it != services + services_num;
+       ++service_it) {
     for (systemd_metric_group const *groups_it = groups;
          groups_it->accounting_flag != NULL; ++groups_it) {
       bool accounting_flag_var = true;
