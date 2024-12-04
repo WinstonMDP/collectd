@@ -7,18 +7,16 @@
 #include "systemd/sd-bus.h"
 #include "utils/common/common.h"
 
-typedef struct systemd_metric systemd_metric;
-struct systemd_metric {
+typedef struct {
   char *name;
-  char const *dbus_type;
+  char const dbus_type[2];
   metric_type_t collectd_type;
-};
+} systemd_metric;
 
-typedef struct systemd_metric_group systemd_metric_group;
-struct systemd_metric_group {
+typedef struct {
   char const *accounting_flag;
   systemd_metric *metrics;
-};
+} systemd_metric_group;
 
 systemd_metric_group const groups[] = {
     {
