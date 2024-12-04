@@ -90,7 +90,7 @@ systemd_metric_group const groups[] = {
                 {
                     .name = "CPUUsageNSec",
                     .dbus_type = "t",
-                    .collectd_type = METRIC_TYPE_GAUGE,
+                    .collectd_type = METRIC_TYPE_COUNTER,
                 },
                 {.name = NULL},
             },
