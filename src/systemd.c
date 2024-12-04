@@ -135,7 +135,7 @@ systemd_metric_group const groups[] = {
             },
     },
     {
-        .accounting_flag = "true",
+        .accounting_flag = NULL,
         .metrics =
             (systemd_metric[]){
                 {
@@ -201,9 +201,9 @@ static int systemd_read() {
   for (char **service_it = services; service_it != services + services_num;
        ++service_it) {
     for (systemd_metric_group const *groups_it = groups;
-         groups_it->accounting_flag != NULL; ++groups_it) {
+         groups_it != groups + sizeof groups / sizeof groups[0]; ++groups_it) {
       bool accounting_flag_var = true;
-      if (strcmp(groups_it->accounting_flag, "true")) {
+      if (groups_it->accounting_flag) {
         r = get_prop(bus, *service_it, "b", groups_it->accounting_flag,
                      &accounting_flag_var, &sd_bus_err);
         if (r < 0) {
@@ -274,7 +274,8 @@ static int systemd_init() {
 
 static int systemd_shutdown() {
   sd_bus_unref(bus);
-  for (char **service_it = services; *service_it != NULL; ++service_it) {
+  for (char **service_it = services; service_it != services + services_num;
+       ++service_it) {
     free(*service_it);
   }
   free(services);
