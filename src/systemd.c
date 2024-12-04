@@ -146,12 +146,13 @@ systemd_metric_group const groups[] = {
                 {.name = NULL},
             },
     },
-    {.accounting_flag = NULL},
 };
 
 static char **services = NULL;
 
 static size_t services_num = 0;
+
+static sd_bus *bus = NULL;
 
 static int systemd_config(oconfig_item_t *ci) {
   services_num += ci->children_num;
@@ -178,8 +179,6 @@ static int systemd_config(oconfig_item_t *ci) {
   }
   return EXIT_SUCCESS;
 }
-
-sd_bus *bus = NULL;
 
 static int get_prop(sd_bus *bus, char const *service, char const type[static 1],
                     char const prop[static 1], void *var, sd_bus_error *err) {
