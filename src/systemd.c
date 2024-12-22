@@ -1,5 +1,3 @@
-#include "collectd.h"
-
 #include "liboconfig/oconfig.h"
 #include "metric.h"
 #include "plugin.h"
