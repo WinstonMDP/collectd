@@ -5,6 +5,9 @@
 #include "systemd/sd-bus.h"
 #include "utils/common/common.h"
 
+#include <libxml/xpath.h>
+#include "libxml/parser.h"
+
 typedef struct {
   char *name;
   char const dbus_type[2];
@@ -12,11 +15,11 @@ typedef struct {
 } systemd_metric;
 
 typedef struct {
-  char const *accounting_flag;
+  char *accounting_flag;
   systemd_metric *metrics;
 } systemd_metric_group;
 
-static systemd_metric_group const service_groups[] = {
+static systemd_metric_group service_groups[] = {
     {
         .accounting_flag = "MemoryAccounting",
         .metrics =
@@ -51,7 +54,7 @@ static systemd_metric_group const service_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_GAUGE,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -78,7 +81,7 @@ static systemd_metric_group const service_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -90,7 +93,7 @@ static systemd_metric_group const service_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -117,7 +120,7 @@ static systemd_metric_group const service_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -129,7 +132,7 @@ static systemd_metric_group const service_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_GAUGE,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -141,12 +144,12 @@ static systemd_metric_group const service_groups[] = {
                     .dbus_type = "u",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
 };
 
-static systemd_metric_group const slice_groups[] = {
+static systemd_metric_group slice_groups[] = {
     {
         .accounting_flag = "MemoryAccounting",
         .metrics =
@@ -181,7 +184,7 @@ static systemd_metric_group const slice_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_GAUGE,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -208,7 +211,7 @@ static systemd_metric_group const slice_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -220,7 +223,7 @@ static systemd_metric_group const slice_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -247,7 +250,7 @@ static systemd_metric_group const slice_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_COUNTER,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
     {
@@ -259,13 +262,13 @@ static systemd_metric_group const slice_groups[] = {
                     .dbus_type = "t",
                     .collectd_type = METRIC_TYPE_GAUGE,
                 },
-                {.name = NULL},
+                {.collectd_type = METRIC_TYPE_UNTYPED},
             },
     },
 };
 
 typedef struct {
-  char *name;
+  char *path;
   bool is_slice;
 } unit;
 
@@ -275,7 +278,59 @@ static size_t units_num = 0;
 
 static sd_bus *bus = NULL;
 
+static int introspect_prop(xmlXPathContextPtr xpath_ctx,
+                           char const interface[static 1], char **prop) {
+  char query[128];
+  sprintf(query,
+          "//interface[@name=\"%s\"]/"
+          "property[@name=\"%s\"]",
+          interface, *prop);
+  xmlXPathObjectPtr xpath_obj =
+      xmlXPathEvalExpression(BAD_CAST(query), xpath_ctx);
+  if (xpath_obj == NULL) {
+    ERROR("Can't get xpath object");
+    return EXIT_FAILURE;
+  }
+  if (xpath_obj->nodesetval->nodeNr == 0) {
+    WARNING("This systemd version doesn't provide %s property in %s interface",
+            *prop, interface);
+    *prop = NULL;
+  }
+  return EXIT_SUCCESS;
+}
+
+static int introspect_unit(xmlXPathContextPtr xpath_ctx, char const *interface,
+                           systemd_metric_group *groups, size_t ngroups) {
+  for (systemd_metric_group *groups_it = groups; groups_it != groups + ngroups;
+       ++groups_it) {
+    if (groups_it->accounting_flag != NULL) {
+      if (introspect_prop(xpath_ctx, "org.freedesktop.systemd1.Slice",
+                          &groups_it->accounting_flag) < 0) {
+        return EXIT_FAILURE;
+      }
+    }
+    for (systemd_metric *metric_it = groups_it->metrics;
+         metric_it->collectd_type != METRIC_TYPE_UNTYPED; ++metric_it) {
+      if (introspect_prop(xpath_ctx, "org.freedesktop.systemd1.Slice",
+                          &metric_it->name) < 0) {
+        return EXIT_FAILURE;
+      }
+    }
+  }
+  return EXIT_SUCCESS;
+}
+
 static int systemd_config(oconfig_item_t *ci) {
+  if (bus == NULL) {
+    int r = sd_bus_open_system(&bus);
+    if (r < 0) {
+      ERROR("Failed to connect to system bus: %s", strerror(-r));
+      sd_bus_unref(bus);
+      return r;
+    }
+  }
+  bool was_service = false;
+  bool was_slice = false;
   units_num += ci->children_num;
   units = realloc(units, sizeof(unit) * units_num);
   if (units == NULL) {
@@ -292,12 +347,51 @@ static int systemd_config(oconfig_item_t *ci) {
       return EXIT_FAILURE;
     }
     int r = sd_bus_path_encode("/org/freedesktop/systemd1/unit", external_id,
-                               &unit.name);
+                               &unit.path);
     if (r < 0) {
       ERROR("Can't encode \"%s\" unit: %s", external_id, strerror(-r));
       return EXIT_FAILURE;
     }
     units[units_num - ci->children_num + i] = unit;
+    if ((was_slice && was_service) || (was_slice && unit.is_slice) ||
+        (was_service && !unit.is_slice)) {
+      return EXIT_SUCCESS;
+    }
+    sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
+    sd_bus_message *m = NULL;
+    r = sd_bus_call_method(bus, "org.freedesktop.systemd1", unit.path,
+                           "org.freedesktop.DBus.Introspectable", "Introspect",
+                           &sd_bus_err, &m, "");
+    if (r < 0) {
+      ERROR("Can't introspect %s: %s {%s}, %s", unit.path, sd_bus_err.name,
+            sd_bus_err.message, strerror(-r));
+      return EXIT_FAILURE;
+    }
+    char const *xml;
+    r = sd_bus_message_read(m, "s", &xml);
+    xmlDocPtr doc = xmlReadMemory(xml, strlen(xml), "noname.xml", NULL, 0);
+    if (doc == NULL) {
+      ERROR("Can't parse xml: %s", xml);
+      return EXIT_FAILURE;
+    }
+    xmlXPathContextPtr xpath_ctx = xmlXPathNewContext(doc);
+    if (xpath_ctx == NULL) {
+      ERROR("Can't get context of the xml");
+      return EXIT_FAILURE;
+    }
+    if (unit.is_slice) {
+      if (introspect_unit(xpath_ctx, "org.freedesktop.systemd1.Slice",
+                          slice_groups, STATIC_ARRAY_SIZE(slice_groups)) < 0) {
+        return EXIT_FAILURE;
+      }
+      was_slice = true;
+    } else {
+      if (introspect_unit(xpath_ctx, "org.freedesktop.systemd1.Slice",
+                          slice_groups, STATIC_ARRAY_SIZE(slice_groups)) < 0) {
+        return EXIT_FAILURE;
+      }
+      was_service = true;
+    }
   }
   return EXIT_SUCCESS;
 }
@@ -334,7 +428,7 @@ static int systemd_read() {
         interface = "org.freedesktop.systemd1.Service";
       }
       if (groups_it->accounting_flag) {
-        r = get_prop(bus, interface, unit_it->name, "b",
+        r = get_prop(bus, interface, unit_it->path, "b",
                      groups_it->accounting_flag, &accounting_flag_var,
                      &sd_bus_err);
         if (r < 0) {
@@ -346,16 +440,18 @@ static int systemd_read() {
       }
       if (accounting_flag_var) {
         for (systemd_metric *metrics_it = groups_it->metrics;
-             metrics_it->name != NULL; ++metrics_it) {
+             metrics_it->collectd_type != METRIC_TYPE_UNTYPED; ++metrics_it) {
+          if (!metrics_it->name) {
+            continue;
+          }
           uint64_t val;
-          r = get_prop(bus, interface, unit_it->name, metrics_it->dbus_type,
+          r = get_prop(bus, interface, unit_it->path, metrics_it->dbus_type,
                        metrics_it->name, &val, &sd_bus_err);
           if (r < 0) {
             ERROR("Failed to get %s property: %s {%s}, %s", metrics_it->name,
                   sd_bus_err.name, sd_bus_err.message, strerror(-r));
             goto fail;
           }
-
           metric_family_t fam = {
               .name = metrics_it->name,
               .type = metrics_it->collectd_type,
@@ -372,7 +468,7 @@ static int systemd_read() {
             ERROR("Unimplemented collectd type");
             goto fail;
           }
-          metric_label_set(&m, "path", unit_it->name);
+          metric_label_set(&m, "path", unit_it->path);
           metric_family_metric_append(&fam, m);
           r = plugin_dispatch_metric_family(&fam);
           metric_family_metric_reset(&fam);
@@ -391,29 +487,16 @@ fail:
   return r;
 }
 
-static int systemd_init() {
-  if (bus == NULL) {
-    int r = sd_bus_open_system(&bus);
-    if (r < 0) {
-      ERROR("Failed to connect to system bus: %s", strerror(-r));
-      sd_bus_unref(bus);
-      return r;
-    }
-  }
-  return EXIT_SUCCESS;
-}
-
 static int systemd_shutdown() {
   sd_bus_unref(bus);
   for (unit *unit_it = units; unit_it != units + units_num; ++unit_it) {
-    free(unit_it->name);
+    free(unit_it->path);
   }
   free(units);
   return EXIT_SUCCESS;
 }
 
 void module_register() {
-  plugin_register_init("systemd", systemd_init);
   plugin_register_complex_config("systemd", systemd_config);
   plugin_register_read("systemd", systemd_read);
   plugin_register_shutdown("systemd", systemd_shutdown);
