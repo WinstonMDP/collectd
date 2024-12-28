@@ -278,6 +278,9 @@ static size_t units_num = 0;
 
 static sd_bus *bus = NULL;
 
+static bool was_service = false;
+static bool was_slice = false;
+
 static int introspect_prop(xmlXPathContextPtr xpath_ctx,
                            char const interface[static 1], char **prop) {
   char query[128];
@@ -299,23 +302,60 @@ static int introspect_prop(xmlXPathContextPtr xpath_ctx,
   return EXIT_SUCCESS;
 }
 
-static int introspect_unit(xmlXPathContextPtr xpath_ctx, char const *interface,
-                           systemd_metric_group *groups, size_t ngroups) {
+static int introspect_unit(unit *unit) {
+  sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
+  sd_bus_message *m = NULL;
+  int r = sd_bus_call_method(bus, "org.freedesktop.systemd1", unit->path,
+                             "org.freedesktop.DBus.Introspectable",
+                             "Introspect", &sd_bus_err, &m, "");
+  if (r < 0) {
+    ERROR("Can't introspect %s: %s {%s}, %s", unit->path, sd_bus_err.name,
+          sd_bus_err.message, strerror(-r));
+    return EXIT_FAILURE;
+  }
+  char const *xml;
+  r = sd_bus_message_read(m, "s", &xml);
+  xmlDocPtr doc = xmlReadMemory(xml, strlen(xml), "noname.xml", NULL, 0);
+  if (doc == NULL) {
+    ERROR("Can't parse xml: %s", xml);
+    return EXIT_FAILURE;
+  }
+  xmlXPathContextPtr xpath_ctx = xmlXPathNewContext(doc);
+  if (xpath_ctx == NULL) {
+    ERROR("Can't get context of the xml");
+    return EXIT_FAILURE;
+  }
+  systemd_metric_group *groups;
+  size_t ngroups;
+  char const *interface;
+  if (unit->is_slice) {
+    groups = slice_groups;
+    ngroups = STATIC_ARRAY_SIZE(slice_groups);
+    interface = "org.freedesktop.systemd1.Slice";
+  } else {
+    groups = service_groups;
+    ngroups = STATIC_ARRAY_SIZE(service_groups);
+    interface = "org.freedesktop.systemd1.Service";
+  }
   for (systemd_metric_group *groups_it = groups; groups_it != groups + ngroups;
        ++groups_it) {
     if (groups_it->accounting_flag != NULL) {
-      if (introspect_prop(xpath_ctx, "org.freedesktop.systemd1.Slice",
-                          &groups_it->accounting_flag) < 0) {
+      if (introspect_prop(xpath_ctx, interface, &groups_it->accounting_flag) <
+          0) {
         return EXIT_FAILURE;
       }
     }
     for (systemd_metric *metric_it = groups_it->metrics;
          metric_it->collectd_type != METRIC_TYPE_UNTYPED; ++metric_it) {
-      if (introspect_prop(xpath_ctx, "org.freedesktop.systemd1.Slice",
-                          &metric_it->name) < 0) {
+      if (introspect_prop(xpath_ctx, interface, &metric_it->name) < 0) {
         return EXIT_FAILURE;
       }
     }
+  }
+  if (unit->is_slice) {
+    was_slice = true;
+  } else {
+    was_service = true;
   }
   return EXIT_SUCCESS;
 }
@@ -329,8 +369,6 @@ static int systemd_config(oconfig_item_t *ci) {
       return r;
     }
   }
-  bool was_service = false;
-  bool was_slice = false;
   units_num += ci->children_num;
   units = realloc(units, sizeof(unit) * units_num);
   if (units == NULL) {
@@ -353,44 +391,8 @@ static int systemd_config(oconfig_item_t *ci) {
       return EXIT_FAILURE;
     }
     units[units_num - ci->children_num + i] = unit;
-    if ((was_slice && was_service) || (was_slice && unit.is_slice) ||
-        (was_service && !unit.is_slice)) {
-      return EXIT_SUCCESS;
-    }
-    sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
-    sd_bus_message *m = NULL;
-    r = sd_bus_call_method(bus, "org.freedesktop.systemd1", unit.path,
-                           "org.freedesktop.DBus.Introspectable", "Introspect",
-                           &sd_bus_err, &m, "");
-    if (r < 0) {
-      ERROR("Can't introspect %s: %s {%s}, %s", unit.path, sd_bus_err.name,
-            sd_bus_err.message, strerror(-r));
-      return EXIT_FAILURE;
-    }
-    char const *xml;
-    r = sd_bus_message_read(m, "s", &xml);
-    xmlDocPtr doc = xmlReadMemory(xml, strlen(xml), "noname.xml", NULL, 0);
-    if (doc == NULL) {
-      ERROR("Can't parse xml: %s", xml);
-      return EXIT_FAILURE;
-    }
-    xmlXPathContextPtr xpath_ctx = xmlXPathNewContext(doc);
-    if (xpath_ctx == NULL) {
-      ERROR("Can't get context of the xml");
-      return EXIT_FAILURE;
-    }
-    if (unit.is_slice) {
-      if (introspect_unit(xpath_ctx, "org.freedesktop.systemd1.Slice",
-                          slice_groups, STATIC_ARRAY_SIZE(slice_groups)) < 0) {
-        return EXIT_FAILURE;
-      }
-      was_slice = true;
-    } else {
-      if (introspect_unit(xpath_ctx, "org.freedesktop.systemd1.Slice",
-                          slice_groups, STATIC_ARRAY_SIZE(slice_groups)) < 0) {
-        return EXIT_FAILURE;
-      }
-      was_service = true;
+    if ((!was_slice && unit.is_slice) || (!was_service && !unit.is_slice)) {
+      introspect_unit(&unit);
     }
   }
   return EXIT_SUCCESS;
@@ -414,10 +416,15 @@ static int systemd_read() {
   int r;
   sd_bus_error sd_bus_err = SD_BUS_ERROR_NULL;
   for (unit *unit_it = units; unit_it != units + units_num; ++unit_it) {
-    systemd_metric_group const *groups =
-        unit_it->is_slice ? slice_groups : service_groups;
-    size_t ngroups = unit_it->is_slice ? STATIC_ARRAY_SIZE(slice_groups)
-                                       : STATIC_ARRAY_SIZE(service_groups);
+    systemd_metric_group const *groups;
+    size_t ngroups;
+    if (unit_it->is_slice) {
+      groups = slice_groups;
+      ngroups = STATIC_ARRAY_SIZE(slice_groups);
+    } else {
+      groups = service_groups;
+      ngroups = STATIC_ARRAY_SIZE(service_groups);
+    }
     for (systemd_metric_group const *groups_it = groups;
          groups_it != groups + ngroups; ++groups_it) {
       bool accounting_flag_var = true;
