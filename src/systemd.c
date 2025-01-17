@@ -392,7 +392,9 @@ static int systemd_config(oconfig_item_t *ci) {
     }
     units[units_num - ci->children_num + i] = unit;
     if ((!was_slice && unit.is_slice) || (!was_service && !unit.is_slice)) {
-      introspect_unit(&unit);
+      if (introspect_unit(&unit) == EXIT_FAILURE) {
+        return EXIT_FAILURE;
+      }
     }
   }
   return EXIT_SUCCESS;
